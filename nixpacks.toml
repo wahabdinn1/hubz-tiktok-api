@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python3", "chromium"]
+nixPkgs = ["python3", "python3Packages.pip", "chromium"]
 
 [phases.build]
 cmds = ["cd api && python3 -m pip install -r requirements.txt", "cd api && python3 -m playwright install chromium"]
