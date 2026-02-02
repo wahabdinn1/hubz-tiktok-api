@@ -1,5 +1,2 @@
 [build]
-builder = "nixpacks"
-
-[deploy]
-startCommand = ". venv/bin/activate && cd api && uvicorn app:app --host 0.0.0.0 --port $PORT"
+builder = "dockerfile"
