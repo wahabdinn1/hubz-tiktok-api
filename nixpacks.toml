@@ -2,7 +2,11 @@
 nixPkgs = ["python3", "chromium"]
 
 [phases.build]
-cmds = ["python3 -m ensurepip", "cd api && python3 -m pip install -r requirements.txt", "cd api && python3 -m playwright install chromium"]
+cmds = [
+    "python3 -m venv venv",
+    ". venv/bin/activate && pip install -r api/requirements.txt",
+    ". venv/bin/activate && playwright install chromium"
+]
 
 [start]
-cmd = "cd api && python3 -m uvicorn app:app --host 0.0.0.0 --port $PORT"
+cmd = ". venv/bin/activate && cd api && uvicorn app:app --host 0.0.0.0 --port $PORT"
