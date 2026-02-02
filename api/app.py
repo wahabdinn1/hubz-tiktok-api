@@ -1,6 +1,8 @@
 import os
 import asyncio
 import json
+import random
+import string
 from typing import Optional, List, Dict, Any, Union
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -105,24 +107,39 @@ async def token_middleare(request: Request, call_next):
             REQUEST_TOKEN.reset(token_reset_token)
 
 async def fetch_new_token() -> Optional[str]:
-    """Attempts to fetch a fresh ms_token using Playwright."""
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-        )
-        page = await context.new_page()
-        try:
-            await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=30000)
-            cookies = await context.cookies()
-            for cookie in cookies:
-                if cookie['name'] == 'msToken':
-                    return cookie['value']
-        except Exception as e:
-            print(f"Failed to auto-fetch token: {e}")
-        finally:
-            await browser.close()
-    return None
+    """
+    Attempts to fetch a fresh ms_token using Playwright.
+    Falls back to a synthetic token if scraping fails.
+    """
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080}
+            )
+            page = await context.new_page()
+            try:
+                # Navigate to a profile page which often sets cookies faster than home
+                await page.goto("https://www.tiktok.com/@tiktok", wait_until="domcontentloaded", timeout=20000)
+                
+                # Check cookies
+                cookies = await context.cookies()
+                for cookie in cookies:
+                    if cookie['name'] == 'msToken':
+                        print(f"Auto-fetched real token: {cookie['value'][:10]}...")
+                        return cookie['value']
+            except Exception as e:
+                print(f"Scraping token failed: {e}")
+            finally:
+                await browser.close()
+    except Exception as e:
+        print(f"Browser launch failed: {e}")
+
+    # Fallback: Generate a synthetic token
+    print("Falling back to synthetic token.")
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choice(chars) for _ in range(126))
 
 @app.post("/api/token/update", tags=["System"])
 async def update_token(token: str = Query(..., description="The new ms_token string")):
