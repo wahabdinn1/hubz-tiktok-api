@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python3", "chromium"]
+
+[phases.build]
+cmds = ["cd api && pip install -r requirements.txt", "playwright install chromium"]
+
+[start]
+cmd = "cd api && uvicorn app:app --host 0.0.0.0 --port $PORT"
