@@ -63,13 +63,46 @@ class TrendingResponse(BaseModel):
 
 # --- Token Management ---
 
+import contextvars
+from fastapi import Request
+
+# ContextVar to hold valid token for the current request (from header)
+REQUEST_TOKEN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("request_token", default=None)
+
 # Global state for runtime token updates (avoids redeploys)
 RUNTIME_MS_TOKEN = os.getenv("MS_TOKEN", "")
 
 def get_current_token() -> str:
-    """Get the currently active ms_token."""
+    """
+    Get the active ms_token.
+    Priority:
+    1. X-MS-TOKEN header (per request)
+    2. Runtime updated token (global)
+    3. Environment variable (initial)
+    """
+    # Check headers first
+    header_token = REQUEST_TOKEN.get()
+    if header_token:
+        return header_token
+        
+    # Fallback to global runtime token
     global RUNTIME_MS_TOKEN
     return RUNTIME_MS_TOKEN
+
+@app.middleware("http")
+async def token_middleare(request: Request, call_next):
+    """Capture X-MS-TOKEN header and store in context."""
+    token = request.headers.get("X-MS-TOKEN") or request.headers.get("x-ms-token")
+    token_reset_token = None
+    if token:
+        token_reset_token = REQUEST_TOKEN.set(token)
+    
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        if token_reset_token:
+            REQUEST_TOKEN.reset(token_reset_token)
 
 async def fetch_new_token() -> Optional[str]:
     """Attempts to fetch a fresh ms_token using Playwright."""
