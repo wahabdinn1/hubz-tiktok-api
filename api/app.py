@@ -328,7 +328,13 @@ async def user_videos(username: str, count: int = 10):
             user = api.user(username=username)
             videos = []
             async for video in user.videos(count=count):
-                videos.append(video.as_dict)
+                video_data = video.as_dict
+                # Add explicit pinned status (isTop usually indicates pinned)
+                video_data['is_pinned'] = True if video_data.get('isTop') == 1 else False
+                videos.append(video_data)
+                # Manually enforce limit to prevent fetching excessive items
+                if len(videos) >= count:
+                    break
             return {"status": "success", "videos": videos}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
