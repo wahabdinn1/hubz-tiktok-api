@@ -61,6 +61,66 @@ class TrendingResponse(BaseModel):
     totalCreators: Optional[int] = None
     message: Optional[str] = None
 
+# --- Token Management ---
+
+# Global state for runtime token updates (avoids redeploys)
+RUNTIME_MS_TOKEN = os.getenv("MS_TOKEN", "")
+
+def get_current_token() -> str:
+    """Get the currently active ms_token."""
+    global RUNTIME_MS_TOKEN
+    return RUNTIME_MS_TOKEN
+
+async def fetch_new_token() -> Optional[str]:
+    """Attempts to fetch a fresh ms_token using Playwright."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
+        try:
+            await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=30000)
+            cookies = await context.cookies()
+            for cookie in cookies:
+                if cookie['name'] == 'msToken':
+                    return cookie['value']
+        except Exception as e:
+            print(f"Failed to auto-fetch token: {e}")
+        finally:
+            await browser.close()
+    return None
+
+@app.post("/api/token/update", tags=["System"])
+async def update_token(token: str = Query(..., description="The new ms_token string")):
+    """Update the ms_token at runtime without restarting the server."""
+    global RUNTIME_MS_TOKEN
+    RUNTIME_MS_TOKEN = token
+    return {
+        "status": "success", 
+        "message": "Token updated successfully. Subsequent requests will use the new token.", 
+        "result": {"preview": token[:10] + "..." if len(token) > 10 else token}
+    }
+
+@app.post("/api/token/auto", tags=["System"])
+async def auto_refresh_token():
+    """Attempt to automatically scrape a fresh ms_token from TikTok."""
+    global RUNTIME_MS_TOKEN
+    new_token = await fetch_new_token()
+    if new_token:
+        RUNTIME_MS_TOKEN = new_token
+        return {"status": "success", "message": "Token auto-refreshed", "token": new_token}
+    raise HTTPException(status_code=500, detail="Failed to retrieve ms_token automatically.")
+
+@app.get("/api/token/status", tags=["System"])
+async def get_token_status():
+    """Check if a token is configured."""
+    token = get_current_token()
+    return {
+        "configured": bool(token), 
+        "preview": token[:10] + "..." if token and len(token) > 10 else None
+    }
+
 # --- Helper Functions ---
 
 async def get_trending_videos(count: int = 10, country: str = 'id') -> Dict[str, Any]:
@@ -251,7 +311,7 @@ async def trending_creators(
 async def user_info(username: str):
     """Get user profile details."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             user = api.user(username=username)
             user_data = await user.info()
@@ -263,7 +323,7 @@ async def user_info(username: str):
 async def user_videos(username: str, count: int = 10):
     """Get user's video feed."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             user = api.user(username=username)
             videos = []
@@ -277,7 +337,7 @@ async def user_videos(username: str, count: int = 10):
 async def user_liked(username: str, count: int = 10):
     """Get user's liked videos (if public)."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             user = api.user(username=username)
             videos = []
@@ -293,7 +353,7 @@ async def user_liked(username: str, count: int = 10):
 async def video_details(video_id: str):
     """Get video details and download URL."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             video = api.video(id=video_id)
             info = await video.info()
@@ -305,7 +365,7 @@ async def video_details(video_id: str):
 async def video_comments(video_id: str, count: int = 20):
     """Get comments for a video."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             video = api.video(id=video_id)
             comments = []
@@ -321,7 +381,7 @@ async def video_comments(video_id: str, count: int = 20):
 async def search(q: str, type: str = "video", count: int = 10):
     """Search for users, videos, or hashtags."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             results = []
             search_obj_type = type
@@ -340,7 +400,7 @@ async def search(q: str, type: str = "video", count: int = 10):
 async def hashtag_info(name: str):
     """Get hashtag details."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             tag = api.hashtag(name=name)
             info = await tag.info()
@@ -352,7 +412,7 @@ async def hashtag_info(name: str):
 async def hashtag_videos(name: str, count: int = 10):
     """Get videos for a hashtag."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             tag = api.hashtag(name=name)
             videos = []
@@ -366,7 +426,7 @@ async def hashtag_videos(name: str, count: int = 10):
 async def music_info(music_id: str):
     """Get music/sound details."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             sound = api.sound(id=music_id)
             info = await sound.info()
@@ -378,7 +438,7 @@ async def music_info(music_id: str):
 async def music_videos(music_id: str, count: int = 10):
     """Get videos using a specific sound."""
     async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[os.getenv("MS_TOKEN", "")], num_sessions=1, sleep_after=3)
+        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
         try:
             sound = api.sound(id=music_id)
             videos = []
