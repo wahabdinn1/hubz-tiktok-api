@@ -1,0 +1,7 @@
+TikTok-Api
+fastapi
+uvicorn[standard]
+python-dotenv
+TikTokApi
+requests
+playwright

@@ -1,0 +1,11 @@
+INFO:     Started server process [33626]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:5000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:43148 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43148 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43148 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43148 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40146 - "GET /api/user/hubz66 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44944 - "GET /api/user/tiktok HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54570 - "GET /api/user/tiktok/videos?count=10 HTTP/1.1" 200 OK
