@@ -366,6 +366,11 @@ class InstagramSessionImport(BaseModel):
 async def instagram_session_import(data: InstagramSessionImport):
     """
     Import a previously exported Instagram session.
+    
+    Accepts two formats:
+    1. Session from /api/instagram/session/export (instagrapi format)
+    2. Session from browser cookie extractor (cookies format)
+    
     This restores your login without needing to re-authenticate!
     """
     global _instagram_client
@@ -375,15 +380,32 @@ async def instagram_session_import(data: InstagramSessionImport):
         settings = json.loads(base64.b64decode(data.session).decode())
         
         _instagram_client = InstagramClient()
-        _instagram_client.set_settings(settings)
         _instagram_client.delay_range = [2, 5]
         
-        # Verify session is valid by getting account info
+        # Check if this is browser-extracted cookies format
+        if 'cookies' in settings and 'sessionid' in settings:
+            # Browser format - set cookies directly
+            _instagram_client.set_settings({
+                "cookies": settings.get("cookies", {}),
+                "session_id": settings.get("sessionid", ""),
+            })
+            # Try to set session id directly
+            if settings.get("sessionid"):
+                _instagram_client.sessionid = settings["sessionid"]
+        else:
+            # Instagrapi format
+            _instagram_client.set_settings(settings)
+        
+        # Verify session is valid
         try:
             _instagram_client.get_timeline_feed()
+            print("Instagram: Session verified successfully")
         except LoginRequired:
             _instagram_client = None
-            raise HTTPException(status_code=400, detail="Session expired. Please login again.")
+            raise HTTPException(status_code=400, detail="Session expired or invalid. Please get a new session.")
+        except Exception as verify_err:
+            print(f"Instagram: Session verify warning: {verify_err}")
+            # Continue anyway, some endpoints may still work
         
         # Save to file for persistence
         _instagram_client.dump_settings(INSTAGRAM_SESSION_FILE)

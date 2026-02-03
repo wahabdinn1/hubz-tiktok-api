@@ -49,12 +49,35 @@ See `api/.env.example` for reference.
 
 To avoid repeated logins and reduce ban risk:
 
-1. **First time**: Use `/api/instagram/login` with your credentials
-2. **Export session**: Call `GET /api/instagram/session/export`
-3. **Save the session string** to `INSTAGRAM_SESSION` env variable in Railway
-4. **Done!** The API will auto-restore your session on every deploy
+### Option 1: Browser Session Extraction (Recommended)
 
-This way you only login **once** and reuse the session forever!
+If API login is blocked:
+
+```bash
+python extract_instagram_session.py
+```
+
+1. Browser opens → Login manually (handle 2FA, etc.)
+2. Press Enter in terminal
+3. Copy session string → Add to `INSTAGRAM_SESSION` in Railway
+
+### Option 2: API Login
+
+If your IP isn't blocked:
+
+1. Use `POST /api/instagram/login` with credentials
+2. Call `GET /api/instagram/session/export`
+3. Copy session → Add to `INSTAGRAM_SESSION` in Railway
+
+### Option 3: Import via Swagger UI
+
+Already have a session string?
+
+1. Go to `/docs`
+2. Use `POST /api/instagram/session/import`
+3. Paste your session string
+
+The API will auto-restore your session on every deploy!
 
 ---
 
