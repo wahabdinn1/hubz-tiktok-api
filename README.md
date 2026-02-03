@@ -6,7 +6,7 @@ A unified API for **TikTok** and **Instagram** data scraping. Fetch user profile
 
 - **Multi-Platform**: TikTok + Instagram in one API
 - **Organized Docs**: Clean Swagger UI with separate sections per platform
-- **Session Persistence**: Instagram sessions saved to avoid re-login
+- **Session Persistence**: Instagram sessions can be exported/imported to avoid re-login
 - **Docker Ready**: Deploy to Railway, Render, or any Docker host
 
 ## 🛠️ Quick Start
@@ -17,8 +17,7 @@ A unified API for **TikTok** and **Instagram** data scraping. Fetch user profile
 docker build -t social-api .
 docker run -p 8000:8000 \
   -e MS_TOKEN=your_tiktok_token \
-  -e INSTAGRAM_USERNAME=your_ig_username \
-  -e INSTAGRAM_PASSWORD=your_ig_password \
+  -e INSTAGRAM_SESSION=your_session_string \
   social-api
 ```
 
@@ -35,24 +34,43 @@ uvicorn app:app --reload --port 8000
 
 ## 🔑 Environment Variables
 
-| Variable             | Platform  | Description             |
-| -------------------- | --------- | ----------------------- |
-| `MS_TOKEN`           | TikTok    | TikTok ms_token cookie  |
-| `INSTAGRAM_USERNAME` | Instagram | Your Instagram username |
-| `INSTAGRAM_PASSWORD` | Instagram | Your Instagram password |
+| Variable             | Platform  | Description                          |
+| -------------------- | --------- | ------------------------------------ |
+| `MS_TOKEN`           | TikTok    | TikTok ms_token cookie               |
+| `INSTAGRAM_SESSION`  | Instagram | Base64 session string (recommended!) |
+| `INSTAGRAM_USERNAME` | Instagram | Username (only for first login)      |
+| `INSTAGRAM_PASSWORD` | Instagram | Password (only for first login)      |
 
 See `api/.env.example` for reference.
+
+---
+
+## 📸 Instagram Setup (One-Time Login)
+
+To avoid repeated logins and reduce ban risk:
+
+1. **First time**: Use `/api/instagram/login` with your credentials
+2. **Export session**: Call `GET /api/instagram/session/export`
+3. **Save the session string** to `INSTAGRAM_SESSION` env variable in Railway
+4. **Done!** The API will auto-restore your session on every deploy
+
+This way you only login **once** and reuse the session forever!
+
+---
 
 ## 📡 API Endpoints
 
 ### System
 
-| Endpoint                    | Description                   |
-| --------------------------- | ----------------------------- |
-| `GET /`                     | API info and available routes |
-| `GET /api/token/status`     | TikTok token status           |
-| `POST /api/token/update`    | Update TikTok token           |
-| `GET /api/instagram/status` | Instagram login status        |
+| Endpoint                             | Description               |
+| ------------------------------------ | ------------------------- |
+| `GET /api/token/status`              | TikTok token status       |
+| `POST /api/token/update`             | Update TikTok token       |
+| `GET /api/instagram/status`          | Instagram login status    |
+| `POST /api/instagram/login`          | Login with credentials    |
+| `POST /api/instagram/logout`         | Logout and clear session  |
+| `GET /api/instagram/session/export`  | Export session for backup |
+| `POST /api/instagram/session/import` | Import saved session      |
 
 ---
 
@@ -88,11 +106,15 @@ See `api/.env.example` for reference.
 > **Note**: The `shortcode` is the part after `/p/` or `/reel/` in Instagram URLs.  
 > Example: `instagram.com/p/ABC123xyz/` → shortcode is `ABC123xyz`
 
+---
+
 ## 🌐 Deployment (Railway)
 
 1. Push to GitHub
 2. Connect repo to Railway
-3. Add environment variables in Railway dashboard
+3. Add environment variables:
+   - `MS_TOKEN` (TikTok)
+   - `INSTAGRAM_SESSION` (Instagram - get from session export)
 4. Deploy!
 
 ## 📄 License

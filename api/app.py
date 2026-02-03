@@ -215,7 +215,19 @@ def get_instagram_client() -> InstagramClient:
     _instagram_client = InstagramClient()
     _instagram_client.delay_range = [2, 5]  # Add delays to avoid detection
     
-    # Try to load existing session
+    # Priority 1: Try to restore from INSTAGRAM_SESSION env variable (base64 encoded)
+    session_env = os.getenv("INSTAGRAM_SESSION", "")
+    if session_env:
+        try:
+            import base64
+            settings = json.loads(base64.b64decode(session_env).decode())
+            _instagram_client.set_settings(settings)
+            print("Instagram: Restored session from INSTAGRAM_SESSION env variable")
+            return _instagram_client
+        except Exception as e:
+            print(f"Instagram: Failed to restore from env: {e}")
+    
+    # Priority 2: Try to load existing session file
     if INSTAGRAM_SESSION_FILE.exists():
         try:
             _instagram_client.load_settings(INSTAGRAM_SESSION_FILE)
@@ -223,19 +235,19 @@ def get_instagram_client() -> InstagramClient:
                 os.getenv("INSTAGRAM_USERNAME", ""),
                 os.getenv("INSTAGRAM_PASSWORD", "")
             )
-            print("Instagram: Loaded existing session")
+            print("Instagram: Loaded existing session file")
             return _instagram_client
         except Exception as e:
-            print(f"Instagram: Failed to load session: {e}")
+            print(f"Instagram: Failed to load session file: {e}")
     
-    # Fresh login
+    # Priority 3: Fresh login with credentials
     username = os.getenv("INSTAGRAM_USERNAME", "")
     password = os.getenv("INSTAGRAM_PASSWORD", "")
     
     if not username or not password:
         raise HTTPException(
             status_code=500, 
-            detail="Instagram credentials not configured. Set INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD env variables."
+            detail="Instagram not configured. Use /api/instagram/login or set INSTAGRAM_SESSION env variable."
         )
     
     try:
@@ -529,7 +541,7 @@ async def get_tiktok_api():
 
 # --- Routes ---
 
-@app.get("/", tags=["System"])
+@app.get("/", include_in_schema=False)
 async def root():
     """Welcome endpoint listing available API services."""
     return {
