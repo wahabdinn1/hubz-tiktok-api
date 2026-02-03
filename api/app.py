@@ -13,7 +13,7 @@ from playwright.async_api import async_playwright
 from instagrapi import Client as InstagramClient
 from instagrapi.exceptions import LoginRequired, ChallengeRequired
 from pathlib import Path
-from instagram_scraper import scrape_instagram_profile, scrape_instagram_posts, scrape_instagram_post
+from instagram_scraper import scrape_instagram_profile, scrape_instagram_posts, scrape_instagram_post, scrape_instagram_reels
 
 # Load environment variables
 load_dotenv()
@@ -888,16 +888,17 @@ async def instagram_user_reels(
     count: int = Query(10, ge=1, le=50)
 ):
     """
-    Get Instagram user's reels (public profiles only).
+    Get Instagram user's reels with full details (public profiles only).
+    Includes video URL, likes, views, etc.
     Uses web scraping - no login required.
     """
     try:
-        all_posts = await scrape_instagram_posts(username, count * 2)
-        reels = [p for p in all_posts if p.get('is_reel', False)][:count]
+        reels = await scrape_instagram_reels(username, count)
         return {
             "status": "success",
             "reels": reels,
-            "note": "Filtered reels from scraped posts."
+            "count": len(reels),
+            "note": "Data scraped from public profile. Includes video URLs."
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

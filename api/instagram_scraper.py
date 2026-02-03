@@ -220,3 +220,140 @@ async def scrape_instagram_post(shortcode: str) -> Dict[str, Any]:
             return {"error": str(e)}
         finally:
             await browser.close()
+
+
+async def scrape_instagram_reels(username: str, count: int = 10) -> List[Dict[str, Any]]:
+    """Scrape Instagram reels with full details using Playwright."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(user_agent=USER_AGENT)
+        page = await context.new_page()
+        
+        try:
+            # Go directly to user's reels tab
+            url = f"https://www.instagram.com/{username}/reels/"
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
+            
+            # Scroll to load more reels
+            for _ in range(min(count // 12 + 1, 5)):
+                await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                await asyncio.sleep(1)
+            
+            # Extract reel shortcodes
+            reel_codes = await page.evaluate(f'''() => {{
+                const codes = [];
+                const links = document.querySelectorAll('a[href*="/reel/"]');
+                
+                for (let i = 0; i < Math.min(links.length, {count}); i++) {{
+                    const href = links[i].getAttribute('href');
+                    const match = href.match(/\\/reel\\/([\\w-]+)/);
+                    if (match && !codes.includes(match[1])) {{
+                        codes.push(match[1]);
+                    }}
+                }}
+                return codes;
+            }}''')
+            
+            await browser.close()
+            
+            # Now fetch details for each reel
+            reels = []
+            for code in reel_codes[:count]:
+                reel_data = await scrape_instagram_post(code)
+                if "error" not in reel_data:
+                    reel_data['is_reel'] = True
+                    reels.append(reel_data)
+            
+            return reels
+            
+        except Exception as e:
+            print(f"Error scraping reels: {e}")
+            return []
+        finally:
+            if browser.is_connected():
+                await browser.close()
+
+
+async def scrape_instagram_reel(shortcode: str) -> Dict[str, Any]:
+    """Scrape a single Instagram reel by shortcode with video URL."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(user_agent=USER_AGENT)
+        page = await context.new_page()
+        
+        try:
+            # Try reel URL directly
+            url = f"https://www.instagram.com/reel/{shortcode}/"
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
+            
+            reel_data = await page.evaluate('''() => {
+                const data = {
+                    shortcode: null,
+                    caption: null,
+                    like_count: null,
+                    comment_count: null,
+                    view_count: null,
+                    play_count: null,
+                    owner_username: null,
+                    thumbnail_url: null,
+                    video_url: null,
+                    is_video: true,
+                    is_reel: true
+                };
+                
+                const parseCount = (str) => {
+                    if (!str) return null;
+                    str = str.replace(/,/g, '');
+                    if (str.toLowerCase().includes('k')) return Math.round(parseFloat(str) * 1000);
+                    if (str.toLowerCase().includes('m')) return Math.round(parseFloat(str) * 1000000);
+                    return parseInt(str);
+                };
+                
+                // Thumbnail from og:image
+                const ogImage = document.querySelector('meta[property="og:image"]');
+                if (ogImage) data.thumbnail_url = ogImage.content;
+                
+                // Video URL from og:video or og:video:url
+                const ogVideo = document.querySelector('meta[property="og:video"]') || 
+                                document.querySelector('meta[property="og:video:url"]');
+                if (ogVideo) data.video_url = ogVideo.content;
+                
+                // Parse description for likes, comments, plays
+                const ogDesc = document.querySelector('meta[property="og:description"]');
+                if (ogDesc) {
+                    const desc = ogDesc.content;
+                    
+                    const likeMatch = desc.match(/(\\d+[.,]?\\d*[KMkm]?)\\s*likes?/i);
+                    if (likeMatch) data.like_count = parseCount(likeMatch[1]);
+                    
+                    const commentMatch = desc.match(/(\\d+[.,]?\\d*[KMkm]?)\\s*comments?/i);
+                    if (commentMatch) data.comment_count = parseCount(commentMatch[1]);
+                    
+                    // Try to get view/play count
+                    const viewMatch = desc.match(/(\\d+[.,]?\\d*[KMkm]?)\\s*(?:views?|plays?)/i);
+                    if (viewMatch) {
+                        data.view_count = parseCount(viewMatch[1]);
+                        data.play_count = data.view_count;
+                    }
+                }
+                
+                // Owner from og:title
+                const ogTitle = document.querySelector('meta[property="og:title"]');
+                if (ogTitle) {
+                    const match = ogTitle.content.match(/@(\\w+)/);
+                    if (match) data.owner_username = match[1];
+                }
+                
+                return data;
+            }''')
+            
+            reel_data['shortcode'] = shortcode
+            reel_data['url'] = url
+            return reel_data
+            
+        except Exception as e:
+            return {"error": str(e)}
+        finally:
+            await browser.close()
