@@ -177,7 +177,7 @@ async def auto_refresh_token():
 @app.get("/api/token/status", tags=["System"])
 async def get_token_status():
     """Check if a token is configured."""
-    token = get_current_token()
+    token = get_server_token()
     return {
         "configured": bool(token), 
         "preview": token[:10] + "..." if token and len(token) > 10 else None
