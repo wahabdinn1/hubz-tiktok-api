@@ -221,13 +221,38 @@ def get_instagram_client() -> InstagramClient:
         try:
             import base64
             settings = json.loads(base64.b64decode(session_env).decode())
-            _instagram_client.set_settings(settings)
-            print("Instagram: Restored session from INSTAGRAM_SESSION env variable")
+            
+            # Check if this is browser-extracted cookies format
+            if 'cookies' in settings and 'sessionid' in settings:
+                # Browser format - need to convert to instagrapi format
+                cookie_dict = settings.get("cookies", {})
+                _instagram_client.set_settings({
+                    "uuids": {},
+                    "mid": cookie_dict.get("mid", ""),
+                    "ig_did": cookie_dict.get("ig_did", ""),
+                    "ig_nrcb": cookie_dict.get("ig_nrcb", ""),
+                    "cookies": cookie_dict,
+                    "last_login": None,
+                    "device_settings": {},
+                    "user_agent": "Instagram 269.0.0.18.75 Android",
+                })
+                if settings.get("sessionid"):
+                    _instagram_client.sessionid = settings["sessionid"]
+                print("Instagram: Restored browser session from INSTAGRAM_SESSION env")
+            else:
+                # Instagrapi format
+                _instagram_client.set_settings(settings)
+                print("Instagram: Restored session from INSTAGRAM_SESSION env variable")
+            
             return _instagram_client
         except Exception as e:
             print(f"Instagram: Failed to restore from env: {e}")
+            _instagram_client = None
     
     # Priority 2: Try to load existing session file
+    _instagram_client = InstagramClient()
+    _instagram_client.delay_range = [2, 5]
+    
     if INSTAGRAM_SESSION_FILE.exists():
         try:
             _instagram_client.load_settings(INSTAGRAM_SESSION_FILE)
@@ -262,11 +287,21 @@ def get_instagram_client() -> InstagramClient:
     return _instagram_client
 
 @app.get("/api/instagram/status", tags=["System"])
-async def instagram_status():
-    """Check Instagram login status."""
+async def instagram_status(initialize: bool = Query(False, description="Try to initialize session from env if not logged in")):
+    """Check Instagram login status. Set initialize=true to try loading session from env."""
     global _instagram_client
+    
     username = os.getenv("INSTAGRAM_USERNAME", "")
-    session_exists = INSTAGRAM_SESSION_FILE.exists()
+    session_env = os.getenv("INSTAGRAM_SESSION", "")
+    session_file_exists = INSTAGRAM_SESSION_FILE.exists()
+    
+    # Optionally try to initialize from env
+    if initialize and _instagram_client is None and (session_env or session_file_exists):
+        try:
+            _instagram_client = get_instagram_client()
+        except:
+            pass
+    
     logged_in = _instagram_client is not None
     
     current_user = None
@@ -274,14 +309,15 @@ async def instagram_status():
         try:
             current_user = _instagram_client.account_info().username
         except:
-            current_user = None
+            current_user = "session loaded (verification pending)"
     
     return {
-        "configured": bool(username) or logged_in,
+        "configured": bool(username) or bool(session_env) or logged_in,
         "env_username": username if username else None,
+        "env_session_set": bool(session_env),
         "logged_in": logged_in,
         "current_user": current_user,
-        "session_saved": session_exists
+        "session_saved": session_file_exists
     }
 
 @app.post("/api/instagram/login", tags=["System"])
