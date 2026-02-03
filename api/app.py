@@ -323,6 +323,70 @@ async def instagram_logout():
         "message": "Logged out and session cleared"
     }
 
+@app.get("/api/instagram/session/export", tags=["System"])
+async def instagram_session_export():
+    """
+    Export current Instagram session as JSON string.
+    Save this somewhere safe! You can import it after redeploys to avoid re-login.
+    """
+    global _instagram_client
+    
+    if _instagram_client is None:
+        raise HTTPException(status_code=400, detail="Not logged in. Login first, then export.")
+    
+    try:
+        settings = _instagram_client.get_settings()
+        import base64
+        session_str = base64.b64encode(json.dumps(settings).encode()).decode()
+        return {
+            "status": "success",
+            "message": "Session exported. Save this string and use /api/instagram/session/import to restore it.",
+            "session": session_str
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+class InstagramSessionImport(BaseModel):
+    """Request body for session import."""
+    session: str
+
+@app.post("/api/instagram/session/import", tags=["System"])
+async def instagram_session_import(data: InstagramSessionImport):
+    """
+    Import a previously exported Instagram session.
+    This restores your login without needing to re-authenticate!
+    """
+    global _instagram_client
+    
+    try:
+        import base64
+        settings = json.loads(base64.b64decode(data.session).decode())
+        
+        _instagram_client = InstagramClient()
+        _instagram_client.set_settings(settings)
+        _instagram_client.delay_range = [2, 5]
+        
+        # Verify session is valid by getting account info
+        try:
+            _instagram_client.get_timeline_feed()
+        except LoginRequired:
+            _instagram_client = None
+            raise HTTPException(status_code=400, detail="Session expired. Please login again.")
+        
+        # Save to file for persistence
+        _instagram_client.dump_settings(INSTAGRAM_SESSION_FILE)
+        
+        return {
+            "status": "success",
+            "message": "Session imported successfully! You're now logged in.",
+            "session_saved": True
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        _instagram_client = None
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
 
 # --- Helper Functions ---
 
