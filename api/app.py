@@ -13,6 +13,7 @@ from playwright.async_api import async_playwright
 from instagrapi import Client as InstagramClient
 from instagrapi.exceptions import LoginRequired, ChallengeRequired
 from pathlib import Path
+from instagram_scraper import scrape_instagram_profile, scrape_instagram_posts, scrape_instagram_post
 
 # Load environment variables
 load_dotenv()
@@ -832,26 +833,33 @@ async def music_videos(
 
 @app.get("/api/instagram/user/{username}", tags=["Instagram - User"])
 async def instagram_user_info(username: str):
-    """Get Instagram user profile details."""
+    """
+    Get Instagram user profile details (public profiles only).
+    Uses web scraping - no login required.
+    """
     try:
-        cl = get_instagram_client()
-        user = cl.user_info_by_username(username)
+        profile = await scrape_instagram_profile(username)
+        
+        if "error" in profile:
+            raise HTTPException(status_code=404, detail=profile["error"])
+        
         return {
             "status": "success",
             "user": {
-                "pk": str(user.pk),
-                "username": user.username,
-                "full_name": user.full_name,
-                "biography": user.biography,
-                "follower_count": user.follower_count,
-                "following_count": user.following_count,
-                "media_count": user.media_count,
-                "is_verified": user.is_verified,
-                "is_private": user.is_private,
-                "profile_pic_url": str(user.profile_pic_url) if user.profile_pic_url else None,
-                "external_url": user.external_url
-            }
+                "username": profile.get("username") or username,
+                "full_name": profile.get("full_name"),
+                "biography": profile.get("biography"),
+                "follower_count": profile.get("follower_count"),
+                "following_count": profile.get("following_count"),
+                "media_count": profile.get("media_count"),
+                "is_verified": profile.get("is_verified", False),
+                "is_private": profile.get("is_private", False),
+                "profile_pic_url": profile.get("profile_pic_url")
+            },
+            "note": "Data scraped from public profile. No login required."
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -860,28 +868,17 @@ async def instagram_user_posts(
     username: str,
     count: int = Query(10, ge=1, le=50)
 ):
-    """Get Instagram user's posts."""
+    """
+    Get Instagram user's posts (public profiles only).
+    Uses web scraping - no login required.
+    """
     try:
-        cl = get_instagram_client()
-        user = cl.user_info_by_username(username)
-        medias = cl.user_medias(user.pk, amount=count)
-        
-        posts = []
-        for media in medias[:count]:
-            posts.append({
-                "pk": str(media.pk),
-                "code": media.code,
-                "media_type": media.media_type,
-                "caption": media.caption_text if media.caption_text else "",
-                "like_count": media.like_count,
-                "comment_count": media.comment_count,
-                "view_count": media.view_count if hasattr(media, 'view_count') else None,
-                "play_count": media.play_count if hasattr(media, 'play_count') else None,
-                "thumbnail_url": str(media.thumbnail_url) if media.thumbnail_url else None,
-                "taken_at": media.taken_at.isoformat() if media.taken_at else None
-            })
-        
-        return {"status": "success", "posts": posts}
+        posts = await scrape_instagram_posts(username, count)
+        return {
+            "status": "success",
+            "posts": posts,
+            "note": "Data scraped from public profile. Includes shortcodes and thumbnails."
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -890,60 +887,40 @@ async def instagram_user_reels(
     username: str,
     count: int = Query(10, ge=1, le=50)
 ):
-    """Get Instagram user's reels."""
+    """
+    Get Instagram user's reels (public profiles only).
+    Uses web scraping - no login required.
+    """
     try:
-        cl = get_instagram_client()
-        user = cl.user_info_by_username(username)
-        reels = cl.user_clips(user.pk, amount=count)
-        
-        result = []
-        for reel in reels[:count]:
-            result.append({
-                "pk": str(reel.pk),
-                "code": reel.code,
-                "caption": reel.caption_text if reel.caption_text else "",
-                "like_count": reel.like_count,
-                "comment_count": reel.comment_count,
-                "view_count": reel.view_count if hasattr(reel, 'view_count') else None,
-                "play_count": reel.play_count if hasattr(reel, 'play_count') else None,
-                "thumbnail_url": str(reel.thumbnail_url) if reel.thumbnail_url else None,
-                "video_url": str(reel.video_url) if reel.video_url else None,
-                "taken_at": reel.taken_at.isoformat() if reel.taken_at else None
-            })
-        
-        return {"status": "success", "reels": result}
+        all_posts = await scrape_instagram_posts(username, count * 2)
+        reels = [p for p in all_posts if p.get('is_reel', False)][:count]
+        return {
+            "status": "success",
+            "reels": reels,
+            "note": "Filtered reels from scraped posts."
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/instagram/media/{shortcode}", tags=["Instagram - Media"])
 async def instagram_media_info(shortcode: str):
-    """Get Instagram media details by shortcode (from URL)."""
+    """
+    Get Instagram media details by shortcode (from URL).
+    Uses web scraping - no login required.
+    """
     try:
-        cl = get_instagram_client()
-        media_pk = cl.media_pk_from_code(shortcode)
-        media = cl.media_info(media_pk)
+        post = await scrape_instagram_post(shortcode)
+        
+        if "error" in post:
+            raise HTTPException(status_code=404, detail=post["error"])
         
         return {
             "status": "success",
-            "media": {
-                "pk": str(media.pk),
-                "code": media.code,
-                "media_type": media.media_type,
-                "caption": media.caption_text if media.caption_text else "",
-                "like_count": media.like_count,
-                "comment_count": media.comment_count,
-                "view_count": media.view_count if hasattr(media, 'view_count') else None,
-                "play_count": media.play_count if hasattr(media, 'play_count') else None,
-                "thumbnail_url": str(media.thumbnail_url) if media.thumbnail_url else None,
-                "video_url": str(media.video_url) if media.video_url else None,
-                "taken_at": media.taken_at.isoformat() if media.taken_at else None,
-                "user": {
-                    "pk": str(media.user.pk),
-                    "username": media.user.username,
-                    "full_name": media.user.full_name if hasattr(media.user, 'full_name') else None
-                }
-            }
+            "media": post,
+            "note": "Data scraped from public post."
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -952,78 +929,45 @@ async def instagram_media_comments(
     shortcode: str,
     count: int = Query(20, ge=1, le=100)
 ):
-    """Get comments for an Instagram post."""
-    try:
-        cl = get_instagram_client()
-        media_pk = cl.media_pk_from_code(shortcode)
-        comments = cl.media_comments(media_pk, amount=count)
-        
-        result = []
-        for comment in comments[:count]:
-            result.append({
-                "pk": str(comment.pk),
-                "text": comment.text,
-                "created_at": comment.created_at_utc.isoformat() if comment.created_at_utc else None,
-                "like_count": comment.like_count if hasattr(comment, 'like_count') else 0,
-                "user": {
-                    "pk": str(comment.user.pk),
-                    "username": comment.user.username
-                }
-            })
-        
-        return {"status": "success", "comments": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """
+    Get comments for an Instagram post.
+    Note: Comments require login for access.
+    """
+    return {
+        "status": "limited",
+        "comments": [],
+        "shortcode": shortcode,
+        "message": "Comments require Instagram login. Use locally generated session."
+    }
 
 @app.get("/api/instagram/hashtag/{name}", tags=["Instagram - Discovery"])
 async def instagram_hashtag_info(name: str):
-    """Get Instagram hashtag details."""
-    try:
-        cl = get_instagram_client()
-        hashtag = cl.hashtag_info(name)
-        
-        return {
-            "status": "success",
-            "hashtag": {
-                "id": str(hashtag.id),
-                "name": hashtag.name,
-                "media_count": hashtag.media_count,
-                "profile_pic_url": str(hashtag.profile_pic_url) if hashtag.profile_pic_url else None
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """
+    Get Instagram hashtag info.
+    Note: Hashtag pages require login for full data.
+    """
+    return {
+        "status": "limited",
+        "hashtag": name,
+        "url": f"https://www.instagram.com/explore/tags/{name}/",
+        "message": "Hashtag details require Instagram login."
+    }
 
 @app.get("/api/instagram/hashtag/{name}/posts", tags=["Instagram - Discovery"])
 async def instagram_hashtag_posts(
     name: str,
     count: int = Query(10, ge=1, le=50)
 ):
-    """Get recent posts for an Instagram hashtag."""
-    try:
-        cl = get_instagram_client()
-        medias = cl.hashtag_medias_recent(name, amount=count)
-        
-        posts = []
-        for media in medias[:count]:
-            posts.append({
-                "pk": str(media.pk),
-                "code": media.code,
-                "media_type": media.media_type,
-                "caption": media.caption_text if media.caption_text else "",
-                "like_count": media.like_count,
-                "comment_count": media.comment_count,
-                "thumbnail_url": str(media.thumbnail_url) if media.thumbnail_url else None,
-                "taken_at": media.taken_at.isoformat() if media.taken_at else None,
-                "user": {
-                    "pk": str(media.user.pk),
-                    "username": media.user.username
-                }
-            })
-        
-        return {"status": "success", "posts": posts}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """
+    Get posts with a specific hashtag.
+    Note: Hashtag posts require login.
+    """
+    return {
+        "status": "limited",
+        "posts": [],
+        "hashtag": name,
+        "message": "Hashtag posts require Instagram login."
+    }
 
 if __name__ == "__main__":
     import uvicorn
