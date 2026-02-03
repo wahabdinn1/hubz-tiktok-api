@@ -10,15 +10,27 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from TikTokApi import TikTokApi
 from playwright.async_api import async_playwright
+from instagrapi import Client as InstagramClient
+from instagrapi.exceptions import LoginRequired, ChallengeRequired
+from pathlib import Path
 
 # Load environment variables
 load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="TikTok Standalone API",
-    description="A robust, standalone API for fetching TikTok trending videos and creators.",
-    version="1.0.0"
+    title="Social Media API",
+    description="A unified API for TikTok and Instagram data scraping. Fetch user profiles, videos, reels, and analytics.",
+    version="2.0.0",
+    openapi_tags=[
+        {"name": "System", "description": "Token and session management"},
+        {"name": "TikTok - User", "description": "TikTok user profiles and videos"},
+        {"name": "TikTok - Video", "description": "TikTok video details and comments"},
+        {"name": "TikTok - Discovery", "description": "TikTok trending, search, hashtags, music"},
+        {"name": "Instagram - User", "description": "Instagram user profiles and media"},
+        {"name": "Instagram - Media", "description": "Instagram post/reel details"},
+        {"name": "Instagram - Discovery", "description": "Instagram hashtags and search"},
+    ]
 )
 
 # Configure CORS
@@ -62,6 +74,11 @@ class TrendingResponse(BaseModel):
     totalPosts: Optional[int] = None
     totalCreators: Optional[int] = None
     message: Optional[str] = None
+
+class InstagramLoginRequest(BaseModel):
+    """Request body for Instagram login (credentials in body, not URL)."""
+    username: str
+    password: str
 
 # --- Token Management ---
 
@@ -182,6 +199,130 @@ async def get_token_status():
         "configured": bool(token), 
         "preview": token[:10] + "..." if token and len(token) > 10 else None
     }
+
+# --- Instagram Client Management ---
+
+INSTAGRAM_SESSION_FILE = Path("instagram_session.json")
+_instagram_client: Optional[InstagramClient] = None
+
+def get_instagram_client() -> InstagramClient:
+    """Get or create Instagram client with session persistence."""
+    global _instagram_client
+    
+    if _instagram_client is not None:
+        return _instagram_client
+    
+    _instagram_client = InstagramClient()
+    _instagram_client.delay_range = [2, 5]  # Add delays to avoid detection
+    
+    # Try to load existing session
+    if INSTAGRAM_SESSION_FILE.exists():
+        try:
+            _instagram_client.load_settings(INSTAGRAM_SESSION_FILE)
+            _instagram_client.login(
+                os.getenv("INSTAGRAM_USERNAME", ""),
+                os.getenv("INSTAGRAM_PASSWORD", "")
+            )
+            print("Instagram: Loaded existing session")
+            return _instagram_client
+        except Exception as e:
+            print(f"Instagram: Failed to load session: {e}")
+    
+    # Fresh login
+    username = os.getenv("INSTAGRAM_USERNAME", "")
+    password = os.getenv("INSTAGRAM_PASSWORD", "")
+    
+    if not username or not password:
+        raise HTTPException(
+            status_code=500, 
+            detail="Instagram credentials not configured. Set INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD env variables."
+        )
+    
+    try:
+        _instagram_client.login(username, password)
+        _instagram_client.dump_settings(INSTAGRAM_SESSION_FILE)
+        print("Instagram: Fresh login successful, session saved")
+    except ChallengeRequired:
+        raise HTTPException(status_code=500, detail="Instagram challenge required. Please login manually first.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Instagram login failed: {str(e)}")
+    
+    return _instagram_client
+
+@app.get("/api/instagram/status", tags=["System"])
+async def instagram_status():
+    """Check Instagram login status."""
+    global _instagram_client
+    username = os.getenv("INSTAGRAM_USERNAME", "")
+    session_exists = INSTAGRAM_SESSION_FILE.exists()
+    logged_in = _instagram_client is not None
+    
+    current_user = None
+    if logged_in and _instagram_client:
+        try:
+            current_user = _instagram_client.account_info().username
+        except:
+            current_user = None
+    
+    return {
+        "configured": bool(username) or logged_in,
+        "env_username": username if username else None,
+        "logged_in": logged_in,
+        "current_user": current_user,
+        "session_saved": session_exists
+    }
+
+@app.post("/api/instagram/login", tags=["System"])
+async def instagram_login(credentials: InstagramLoginRequest):
+    """
+    Login to Instagram with provided credentials.
+    Credentials are sent in the request body (not URL) for security.
+    This updates the runtime session without needing to restart the server.
+    """
+    global _instagram_client
+    
+    try:
+        # Create new client
+        _instagram_client = InstagramClient()
+        _instagram_client.delay_range = [2, 5]
+        
+        # Attempt login
+        _instagram_client.login(credentials.username, credentials.password)
+        
+        # Save session for persistence
+        _instagram_client.dump_settings(INSTAGRAM_SESSION_FILE)
+        
+        return {
+            "status": "success",
+            "message": f"Successfully logged in as {credentials.username}",
+            "session_saved": True
+        }
+    except ChallengeRequired:
+        _instagram_client = None
+        raise HTTPException(
+            status_code=400, 
+            detail="Instagram challenge required. Try logging in from the Instagram app first, then try again."
+        )
+    except Exception as e:
+        _instagram_client = None
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+
+@app.post("/api/instagram/logout", tags=["System"])
+async def instagram_logout():
+    """Logout from Instagram and clear the session."""
+    global _instagram_client
+    
+    _instagram_client = None
+    
+    # Remove session file
+    if INSTAGRAM_SESSION_FILE.exists():
+        INSTAGRAM_SESSION_FILE.unlink()
+    
+    return {
+        "status": "success",
+        "message": "Logged out and session cleared"
+    }
+
 
 # --- Helper Functions ---
 
@@ -324,28 +465,33 @@ async def get_tiktok_api():
 
 # --- Routes ---
 
-@app.get("/", tags=["General"])
+@app.get("/", tags=["System"])
 async def root():
     """Welcome endpoint listing available API services."""
     return {
-        "message": "Welcome to the TikTok Standalone API",
+        "message": "Welcome to the Social Media API",
+        "version": "2.0.0",
         "docs_url": "/docs",
-        "endpoints": {
-            "trending_videos": "/api/trending/videos",
-            "trending_creators": "/api/trending/creators",
-            "user_profile": "/api/user/{username}",
-            "user_feed": "/api/user/{username}/videos",
-            "video_details": "/api/video/{video_id}",
-            "video_comments": "/api/video/{video_id}/comments",
-            "search": "/api/search",
-            "hashtag": "/api/hashtag/{name}",
-            "music": "/api/music/{music_id}"
+        "platforms": {
+            "tiktok": {
+                "user": "/api/tiktok/user/{username}",
+                "videos": "/api/tiktok/user/{username}/videos",
+                "video": "/api/tiktok/video/{id}",
+                "trending": "/api/tiktok/trending/videos",
+                "search": "/api/tiktok/search"
+            },
+            "instagram": {
+                "user": "/api/instagram/user/{username}",
+                "posts": "/api/instagram/user/{username}/posts",
+                "reels": "/api/instagram/user/{username}/reels",
+                "media": "/api/instagram/media/{shortcode}"
+            }
         }
     }
 
 # --- Trending Endpoints ---
 
-@app.get("/api/trending/videos", response_model=TrendingResponse, tags=["Trending"])
+@app.get("/api/tiktok/trending/videos", response_model=TrendingResponse, tags=["TikTok - Discovery"])
 async def trending_videos(
     count: int = Query(10, ge=1, le=50, description="Number of items to return"),
     country: str = Query("id", description="Country code")
@@ -356,7 +502,7 @@ async def trending_videos(
         raise HTTPException(status_code=500, detail=data.get("message"))
     return data
 
-@app.get("/api/trending/creators", response_model=TrendingResponse, tags=["Trending"])
+@app.get("/api/tiktok/trending/creators", response_model=TrendingResponse, tags=["TikTok - Discovery"])
 async def trending_creators(
     count: int = Query(10, ge=1, le=50, description="Number of items to return"),
     country: str = Query("id", description="Country code")
@@ -369,7 +515,7 @@ async def trending_creators(
 
 # --- User Endpoints ---
 
-@app.get("/api/user/{username}", tags=["User"])
+@app.get("/api/tiktok/user/{username}", tags=["TikTok - User"])
 async def user_info(
     username: str,
     ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
@@ -382,7 +528,7 @@ async def user_info(
     result = await execute_with_fallback(fetch_user, ms_token)
     return {"status": "success", "user": result}
 
-@app.get("/api/user/{username}/videos", tags=["User"])
+@app.get("/api/tiktok/user/{username}/videos", tags=["TikTok - User"])
 async def user_videos(
     username: str, 
     count: int = Query(10, ge=1, le=50),
@@ -403,7 +549,7 @@ async def user_videos(
     result = await execute_with_fallback(fetch_videos, ms_token)
     return {"status": "success", "videos": result}
 
-@app.get("/api/user/{username}/liked", tags=["User"])
+@app.get("/api/tiktok/user/{username}/liked", tags=["TikTok - User"])
 async def user_liked(
     username: str, 
     count: int = Query(10, ge=1, le=50),
@@ -424,7 +570,7 @@ async def user_liked(
 
 # --- Video Endpoints ---
 
-@app.get("/api/video/{video_id}", tags=["Video"])
+@app.get("/api/tiktok/video/{video_id}", tags=["TikTok - Video"])
 async def video_details(
     video_id: str,
     ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
@@ -437,7 +583,7 @@ async def video_details(
     result = await execute_with_fallback(fetch_video, ms_token)
     return {"status": "success", "video": result}
 
-@app.get("/api/video/{video_id}/comments", tags=["Video"])
+@app.get("/api/tiktok/video/{video_id}/comments", tags=["TikTok - Video"])
 async def video_comments(
     video_id: str, 
     count: int = Query(20, ge=1, le=100),
@@ -458,7 +604,7 @@ async def video_comments(
 
 # --- Search Endpoints ---
 
-@app.get("/api/search", tags=["Search"])
+@app.get("/api/tiktok/search", tags=["TikTok - Discovery"])
 async def search(
     q: str, 
     type: str = "video", 
@@ -482,7 +628,7 @@ async def search(
 
 # --- Hashtag & Music Endpoints ---
 
-@app.get("/api/hashtag/{name}", tags=["Hashtag"])
+@app.get("/api/tiktok/hashtag/{name}", tags=["TikTok - Discovery"])
 async def hashtag_info(
     name: str,
     ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
@@ -495,7 +641,7 @@ async def hashtag_info(
     result = await execute_with_fallback(fetch_hashtag, ms_token)
     return {"status": "success", "hashtag": result}
 
-@app.get("/api/hashtag/{name}/videos", tags=["Hashtag"])
+@app.get("/api/tiktok/hashtag/{name}/videos", tags=["TikTok - Discovery"])
 async def hashtag_videos(
     name: str, 
     count: int = Query(10, ge=1, le=50),
@@ -514,7 +660,7 @@ async def hashtag_videos(
     result = await execute_with_fallback(fetch_hashtag_videos, ms_token)
     return {"status": "success", "videos": result}
 
-@app.get("/api/music/{music_id}", tags=["Music"])
+@app.get("/api/tiktok/music/{music_id}", tags=["TikTok - Discovery"])
 async def music_info(
     music_id: str,
     ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
@@ -527,7 +673,7 @@ async def music_info(
     result = await execute_with_fallback(fetch_music, ms_token)
     return {"status": "success", "music": result}
 
-@app.get("/api/music/{music_id}/videos", tags=["Music"])
+@app.get("/api/tiktok/music/{music_id}/videos", tags=["TikTok - Discovery"])
 async def music_videos(
     music_id: str, 
     count: int = Query(10, ge=1, le=50),
@@ -545,6 +691,205 @@ async def music_videos(
     
     result = await execute_with_fallback(fetch_music_videos, ms_token)
     return {"status": "success", "videos": result}
+
+# ============================================================
+# INSTAGRAM ENDPOINTS
+# ============================================================
+
+@app.get("/api/instagram/user/{username}", tags=["Instagram - User"])
+async def instagram_user_info(username: str):
+    """Get Instagram user profile details."""
+    try:
+        cl = get_instagram_client()
+        user = cl.user_info_by_username(username)
+        return {
+            "status": "success",
+            "user": {
+                "pk": str(user.pk),
+                "username": user.username,
+                "full_name": user.full_name,
+                "biography": user.biography,
+                "follower_count": user.follower_count,
+                "following_count": user.following_count,
+                "media_count": user.media_count,
+                "is_verified": user.is_verified,
+                "is_private": user.is_private,
+                "profile_pic_url": str(user.profile_pic_url) if user.profile_pic_url else None,
+                "external_url": user.external_url
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/instagram/user/{username}/posts", tags=["Instagram - User"])
+async def instagram_user_posts(
+    username: str,
+    count: int = Query(10, ge=1, le=50)
+):
+    """Get Instagram user's posts."""
+    try:
+        cl = get_instagram_client()
+        user = cl.user_info_by_username(username)
+        medias = cl.user_medias(user.pk, amount=count)
+        
+        posts = []
+        for media in medias[:count]:
+            posts.append({
+                "pk": str(media.pk),
+                "code": media.code,
+                "media_type": media.media_type,
+                "caption": media.caption_text if media.caption_text else "",
+                "like_count": media.like_count,
+                "comment_count": media.comment_count,
+                "view_count": media.view_count if hasattr(media, 'view_count') else None,
+                "play_count": media.play_count if hasattr(media, 'play_count') else None,
+                "thumbnail_url": str(media.thumbnail_url) if media.thumbnail_url else None,
+                "taken_at": media.taken_at.isoformat() if media.taken_at else None
+            })
+        
+        return {"status": "success", "posts": posts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/instagram/user/{username}/reels", tags=["Instagram - User"])
+async def instagram_user_reels(
+    username: str,
+    count: int = Query(10, ge=1, le=50)
+):
+    """Get Instagram user's reels."""
+    try:
+        cl = get_instagram_client()
+        user = cl.user_info_by_username(username)
+        reels = cl.user_clips(user.pk, amount=count)
+        
+        result = []
+        for reel in reels[:count]:
+            result.append({
+                "pk": str(reel.pk),
+                "code": reel.code,
+                "caption": reel.caption_text if reel.caption_text else "",
+                "like_count": reel.like_count,
+                "comment_count": reel.comment_count,
+                "view_count": reel.view_count if hasattr(reel, 'view_count') else None,
+                "play_count": reel.play_count if hasattr(reel, 'play_count') else None,
+                "thumbnail_url": str(reel.thumbnail_url) if reel.thumbnail_url else None,
+                "video_url": str(reel.video_url) if reel.video_url else None,
+                "taken_at": reel.taken_at.isoformat() if reel.taken_at else None
+            })
+        
+        return {"status": "success", "reels": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/instagram/media/{shortcode}", tags=["Instagram - Media"])
+async def instagram_media_info(shortcode: str):
+    """Get Instagram media details by shortcode (from URL)."""
+    try:
+        cl = get_instagram_client()
+        media_pk = cl.media_pk_from_code(shortcode)
+        media = cl.media_info(media_pk)
+        
+        return {
+            "status": "success",
+            "media": {
+                "pk": str(media.pk),
+                "code": media.code,
+                "media_type": media.media_type,
+                "caption": media.caption_text if media.caption_text else "",
+                "like_count": media.like_count,
+                "comment_count": media.comment_count,
+                "view_count": media.view_count if hasattr(media, 'view_count') else None,
+                "play_count": media.play_count if hasattr(media, 'play_count') else None,
+                "thumbnail_url": str(media.thumbnail_url) if media.thumbnail_url else None,
+                "video_url": str(media.video_url) if media.video_url else None,
+                "taken_at": media.taken_at.isoformat() if media.taken_at else None,
+                "user": {
+                    "pk": str(media.user.pk),
+                    "username": media.user.username,
+                    "full_name": media.user.full_name if hasattr(media.user, 'full_name') else None
+                }
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/instagram/media/{shortcode}/comments", tags=["Instagram - Media"])
+async def instagram_media_comments(
+    shortcode: str,
+    count: int = Query(20, ge=1, le=100)
+):
+    """Get comments for an Instagram post."""
+    try:
+        cl = get_instagram_client()
+        media_pk = cl.media_pk_from_code(shortcode)
+        comments = cl.media_comments(media_pk, amount=count)
+        
+        result = []
+        for comment in comments[:count]:
+            result.append({
+                "pk": str(comment.pk),
+                "text": comment.text,
+                "created_at": comment.created_at_utc.isoformat() if comment.created_at_utc else None,
+                "like_count": comment.like_count if hasattr(comment, 'like_count') else 0,
+                "user": {
+                    "pk": str(comment.user.pk),
+                    "username": comment.user.username
+                }
+            })
+        
+        return {"status": "success", "comments": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/instagram/hashtag/{name}", tags=["Instagram - Discovery"])
+async def instagram_hashtag_info(name: str):
+    """Get Instagram hashtag details."""
+    try:
+        cl = get_instagram_client()
+        hashtag = cl.hashtag_info(name)
+        
+        return {
+            "status": "success",
+            "hashtag": {
+                "id": str(hashtag.id),
+                "name": hashtag.name,
+                "media_count": hashtag.media_count,
+                "profile_pic_url": str(hashtag.profile_pic_url) if hashtag.profile_pic_url else None
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/instagram/hashtag/{name}/posts", tags=["Instagram - Discovery"])
+async def instagram_hashtag_posts(
+    name: str,
+    count: int = Query(10, ge=1, le=50)
+):
+    """Get recent posts for an Instagram hashtag."""
+    try:
+        cl = get_instagram_client()
+        medias = cl.hashtag_medias_recent(name, amount=count)
+        
+        posts = []
+        for media in medias[:count]:
+            posts.append({
+                "pk": str(media.pk),
+                "code": media.code,
+                "media_type": media.media_type,
+                "caption": media.caption_text if media.caption_text else "",
+                "like_count": media.like_count,
+                "comment_count": media.comment_count,
+                "thumbnail_url": str(media.thumbnail_url) if media.thumbnail_url else None,
+                "taken_at": media.taken_at.isoformat() if media.taken_at else None,
+                "user": {
+                    "pk": str(media.user.pk),
+                    "username": media.user.username
+                }
+            })
+        
+        return {"status": "success", "posts": posts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
