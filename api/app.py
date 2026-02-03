@@ -65,46 +65,58 @@ class TrendingResponse(BaseModel):
 
 # --- Token Management ---
 
-import contextvars
-from fastapi import Request
-
-# ContextVar to hold valid token for the current request (from header)
-REQUEST_TOKEN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("request_token", default=None)
-
 # Global state for runtime token updates (avoids redeploys)
 RUNTIME_MS_TOKEN = os.getenv("MS_TOKEN", "")
 
-def get_current_token() -> str:
-    """
-    Get the active ms_token.
-    Priority:
-    1. X-MS-TOKEN header (per request)
-    2. Runtime updated token (global)
-    3. Environment variable (initial)
-    """
-    # Check headers first
-    header_token = REQUEST_TOKEN.get()
-    if header_token:
-        return header_token
-        
-    # Fallback to global runtime token
+def get_server_token() -> str:
+    """Get the server's current ms_token (from env or runtime update)."""
     global RUNTIME_MS_TOKEN
     return RUNTIME_MS_TOKEN
 
-@app.middleware("http")
-async def token_middleare(request: Request, call_next):
-    """Capture X-MS-TOKEN header and store in context."""
-    token = request.headers.get("X-MS-TOKEN") or request.headers.get("x-ms-token")
-    token_reset_token = None
-    if token:
-        token_reset_token = REQUEST_TOKEN.set(token)
-    
+async def try_with_token(api_func, token: str):
+    """
+    Execute an API function with a specific token.
+    Returns (success: bool, result: any)
+    """
     try:
-        response = await call_next(request)
-        return response
-    finally:
-        if token_reset_token:
-            REQUEST_TOKEN.reset(token_reset_token)
+        async with TikTokApi() as api:
+            await api.create_sessions(ms_tokens=[token], num_sessions=1, sleep_after=3)
+            result = await api_func(api)
+            # Check for empty response
+            if result is None or (isinstance(result, list) and len(result) == 0):
+                return False, None
+            return True, result
+    except Exception as e:
+        print(f"Token attempt failed: {e}")
+        return False, None
+
+async def execute_with_fallback(api_func, user_token: Optional[str] = None):
+    """
+    Execute API function with token fallback logic:
+    1. Try with server token (env/runtime)
+    2. If empty response and user_token provided, retry with user_token
+    """
+    server_token = get_server_token()
+    
+    # Try server token first
+    if server_token:
+        success, result = await try_with_token(api_func, server_token)
+        if success:
+            return result
+        print("Server token returned empty, trying user token...")
+    
+    # Fallback to user-provided token
+    if user_token:
+        success, result = await try_with_token(api_func, user_token)
+        if success:
+            return result
+        raise HTTPException(status_code=500, detail="Both server and user tokens failed")
+    
+    # No user token provided and server failed
+    if not server_token:
+        raise HTTPException(status_code=500, detail="No ms_token configured. Please provide one via query parameter.")
+    
+    raise HTTPException(status_code=500, detail="Server token returned empty response. Try providing your own ms_token.")
 
 async def fetch_new_token() -> Optional[str]:
     """
@@ -358,151 +370,181 @@ async def trending_creators(
 # --- User Endpoints ---
 
 @app.get("/api/user/{username}", tags=["User"])
-async def user_info(username: str):
+async def user_info(
+    username: str,
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Get user profile details."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            user = api.user(username=username)
-            user_data = await user.info()
-            return {"status": "success", "user": user_data}
-        except Exception as e:
-             raise HTTPException(status_code=500, detail=str(e))
+    async def fetch_user(api):
+        user = api.user(username=username)
+        return await user.info()
+    
+    result = await execute_with_fallback(fetch_user, ms_token)
+    return {"status": "success", "user": result}
 
 @app.get("/api/user/{username}/videos", tags=["User"])
-async def user_videos(username: str, count: int = 10):
+async def user_videos(
+    username: str, 
+    count: int = Query(10, ge=1, le=50),
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Get user's video feed."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            user = api.user(username=username)
-            videos = []
-            async for video in user.videos(count=count):
-                video_data = video.as_dict
-                # Add explicit pinned status (isTop usually indicates pinned)
-                video_data['is_pinned'] = True if video_data.get('isTop') == 1 else False
-                videos.append(video_data)
-                # Manually enforce limit to prevent fetching excessive items
-                if len(videos) >= count:
-                    break
-            return {"status": "success", "videos": videos}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    async def fetch_videos(api):
+        user = api.user(username=username)
+        videos = []
+        async for video in user.videos(count=count):
+            video_data = video.as_dict
+            video_data['is_pinned'] = True if video_data.get('isTop') == 1 else False
+            videos.append(video_data)
+            if len(videos) >= count:
+                break
+        return videos
+    
+    result = await execute_with_fallback(fetch_videos, ms_token)
+    return {"status": "success", "videos": result}
 
 @app.get("/api/user/{username}/liked", tags=["User"])
-async def user_liked(username: str, count: int = 10):
+async def user_liked(
+    username: str, 
+    count: int = Query(10, ge=1, le=50),
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Get user's liked videos (if public)."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            user = api.user(username=username)
-            videos = []
-            async for video in user.liked(count=count):
-                videos.append(video.as_dict)
-            return {"status": "success", "videos": videos}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    async def fetch_liked(api):
+        user = api.user(username=username)
+        videos = []
+        async for video in user.liked(count=count):
+            videos.append(video.as_dict)
+            if len(videos) >= count:
+                break
+        return videos
+    
+    result = await execute_with_fallback(fetch_liked, ms_token)
+    return {"status": "success", "videos": result}
 
 # --- Video Endpoints ---
 
 @app.get("/api/video/{video_id}", tags=["Video"])
-async def video_details(video_id: str):
+async def video_details(
+    video_id: str,
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Get video details and download URL."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            video = api.video(id=video_id)
-            info = await video.info()
-            return {"status": "success", "video": info}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    async def fetch_video(api):
+        video = api.video(id=video_id)
+        return await video.info()
+    
+    result = await execute_with_fallback(fetch_video, ms_token)
+    return {"status": "success", "video": result}
 
 @app.get("/api/video/{video_id}/comments", tags=["Video"])
-async def video_comments(video_id: str, count: int = 20):
+async def video_comments(
+    video_id: str, 
+    count: int = Query(20, ge=1, le=100),
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Get comments for a video."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            video = api.video(id=video_id)
-            comments = []
-            async for comment in video.comments(count=count):
-                comments.append(comment.as_dict)
-            return {"status": "success", "comments": comments}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    async def fetch_comments(api):
+        video = api.video(id=video_id)
+        comments = []
+        async for comment in video.comments(count=count):
+            comments.append(comment.as_dict)
+            if len(comments) >= count:
+                break
+        return comments
+    
+    result = await execute_with_fallback(fetch_comments, ms_token)
+    return {"status": "success", "comments": result}
 
 # --- Search Endpoints ---
 
 @app.get("/api/search", tags=["Search"])
-async def search(q: str, type: str = "video", count: int = 10):
+async def search(
+    q: str, 
+    type: str = "video", 
+    count: int = Query(10, ge=1, le=50),
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Search for users, videos, or hashtags."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            results = []
-            search_obj_type = type
-            if type == "video":
-                search_obj_type = "item"
-                
-            async for item in api.search.search_type(q, obj_type=search_obj_type, count=count):
-                results.append(item.as_dict)
-            return {"status": "success", "results": results}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    async def do_search(api):
+        results = []
+        search_obj_type = type
+        if type == "video":
+            search_obj_type = "item"
+        async for item in api.search.search_type(q, obj_type=search_obj_type, count=count):
+            results.append(item.as_dict)
+            if len(results) >= count:
+                break
+        return results
+    
+    result = await execute_with_fallback(do_search, ms_token)
+    return {"status": "success", "results": result}
 
 # --- Hashtag & Music Endpoints ---
 
 @app.get("/api/hashtag/{name}", tags=["Hashtag"])
-async def hashtag_info(name: str):
+async def hashtag_info(
+    name: str,
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Get hashtag details."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            tag = api.hashtag(name=name)
-            info = await tag.info()
-            return {"status": "success", "hashtag": info}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    async def fetch_hashtag(api):
+        tag = api.hashtag(name=name)
+        return await tag.info()
+    
+    result = await execute_with_fallback(fetch_hashtag, ms_token)
+    return {"status": "success", "hashtag": result}
 
 @app.get("/api/hashtag/{name}/videos", tags=["Hashtag"])
-async def hashtag_videos(name: str, count: int = 10):
+async def hashtag_videos(
+    name: str, 
+    count: int = Query(10, ge=1, le=50),
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Get videos for a hashtag."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            tag = api.hashtag(name=name)
-            videos = []
-            async for video in tag.videos(count=count):
-                videos.append(video.as_dict)
-            return {"status": "success", "videos": videos}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    async def fetch_hashtag_videos(api):
+        tag = api.hashtag(name=name)
+        videos = []
+        async for video in tag.videos(count=count):
+            videos.append(video.as_dict)
+            if len(videos) >= count:
+                break
+        return videos
+    
+    result = await execute_with_fallback(fetch_hashtag_videos, ms_token)
+    return {"status": "success", "videos": result}
 
 @app.get("/api/music/{music_id}", tags=["Music"])
-async def music_info(music_id: str):
+async def music_info(
+    music_id: str,
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Get music/sound details."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            sound = api.sound(id=music_id)
-            info = await sound.info()
-            return {"status": "success", "music": info}
-        except Exception as e:
-             raise HTTPException(status_code=500, detail=str(e))
+    async def fetch_music(api):
+        sound = api.sound(id=music_id)
+        return await sound.info()
+    
+    result = await execute_with_fallback(fetch_music, ms_token)
+    return {"status": "success", "music": result}
 
 @app.get("/api/music/{music_id}/videos", tags=["Music"])
-async def music_videos(music_id: str, count: int = 10):
+async def music_videos(
+    music_id: str, 
+    count: int = Query(10, ge=1, le=50),
+    ms_token: Optional[str] = Query(None, description="Your ms_token (fallback if server token fails)")
+):
     """Get videos using a specific sound."""
-    async with TikTokApi() as api:
-        await api.create_sessions(ms_tokens=[get_current_token()], num_sessions=1, sleep_after=3)
-        try:
-            sound = api.sound(id=music_id)
-            videos = []
-            async for video in sound.videos(count=count):
-                videos.append(video.as_dict)
-            return {"status": "success", "videos": videos}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    async def fetch_music_videos(api):
+        sound = api.sound(id=music_id)
+        videos = []
+        async for video in sound.videos(count=count):
+            videos.append(video.as_dict)
+            if len(videos) >= count:
+                break
+        return videos
+    
+    result = await execute_with_fallback(fetch_music_videos, ms_token)
+    return {"status": "success", "videos": result}
 
 if __name__ == "__main__":
     import uvicorn
