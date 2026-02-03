@@ -275,85 +275,27 @@ async def scrape_instagram_reels(username: str, count: int = 10) -> List[Dict[st
                 await browser.close()
 
 
-async def scrape_instagram_reel(shortcode: str) -> Dict[str, Any]:
-    """Scrape a single Instagram reel by shortcode with video URL."""
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent=USER_AGENT)
-        page = await context.new_page()
+async def scrape_instagram_posts_detailed(username: str, count: int = 10) -> List[Dict[str, Any]]:
+    """Scrape Instagram posts with full details using Playwright."""
+    try:
+        # First get the list of posts (shortcodes)
+        base_posts = await scrape_instagram_posts(username, count)
         
-        try:
-            # Try reel URL directly
-            url = f"https://www.instagram.com/reel/{shortcode}/"
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
+        detailed_posts = []
+        for post in base_posts:
+            # Fetch full details for each post
+            details = await scrape_instagram_post(post['code'])
             
-            reel_data = await page.evaluate('''() => {
-                const data = {
-                    shortcode: null,
-                    caption: null,
-                    like_count: null,
-                    comment_count: null,
-                    view_count: null,
-                    play_count: null,
-                    owner_username: null,
-                    thumbnail_url: null,
-                    video_url: null,
-                    is_video: true,
-                    is_reel: true
-                };
+            if "error" not in details:
+                # Merge details with base info (base info has url, is_reel which might be useful)
+                merged = {**post, **details}
+                detailed_posts.append(merged)
+            else:
+                # Fallback to base info if detailed fetch fails
+                detailed_posts.append(post)
                 
-                const parseCount = (str) => {
-                    if (!str) return null;
-                    str = str.replace(/,/g, '');
-                    if (str.toLowerCase().includes('k')) return Math.round(parseFloat(str) * 1000);
-                    if (str.toLowerCase().includes('m')) return Math.round(parseFloat(str) * 1000000);
-                    return parseInt(str);
-                };
-                
-                // Thumbnail from og:image
-                const ogImage = document.querySelector('meta[property="og:image"]');
-                if (ogImage) data.thumbnail_url = ogImage.content;
-                
-                // Video URL from og:video or og:video:url
-                const ogVideo = document.querySelector('meta[property="og:video"]') || 
-                                document.querySelector('meta[property="og:video:url"]');
-                if (ogVideo) data.video_url = ogVideo.content;
-                
-                // Parse description for likes, comments, plays
-                const ogDesc = document.querySelector('meta[property="og:description"]');
-                if (ogDesc) {
-                    const desc = ogDesc.content;
-                    
-                    const likeMatch = desc.match(/(\\d+[.,]?\\d*[KMkm]?)\\s*likes?/i);
-                    if (likeMatch) data.like_count = parseCount(likeMatch[1]);
-                    
-                    const commentMatch = desc.match(/(\\d+[.,]?\\d*[KMkm]?)\\s*comments?/i);
-                    if (commentMatch) data.comment_count = parseCount(commentMatch[1]);
-                    
-                    // Try to get view/play count
-                    const viewMatch = desc.match(/(\\d+[.,]?\\d*[KMkm]?)\\s*(?:views?|plays?)/i);
-                    if (viewMatch) {
-                        data.view_count = parseCount(viewMatch[1]);
-                        data.play_count = data.view_count;
-                    }
-                }
-                
-                // Owner from og:title
-                const ogTitle = document.querySelector('meta[property="og:title"]');
-                if (ogTitle) {
-                    const match = ogTitle.content.match(/@(\\w+)/);
-                    if (match) data.owner_username = match[1];
-                }
-                
-                return data;
-            }''')
-            
-            reel_data['shortcode'] = shortcode
-            reel_data['url'] = url
-            return reel_data
-            
-        except Exception as e:
-            return {"error": str(e)}
-        finally:
-            await browser.close()
+        return detailed_posts
+        
+    except Exception as e:
+        print(f"Error scraping detailed posts: {e}")
+        return []
