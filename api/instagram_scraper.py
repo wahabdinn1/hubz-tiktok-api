@@ -20,8 +20,12 @@ async def scrape_instagram_profile(username: str) -> Dict[str, Any]:
         
         try:
             url = f"https://www.instagram.com/{username}/"
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
+            try:
+                await page.goto(url, wait_until="networkidle", timeout=15000)
+            except Exception:
+                print("Network idle timeout, proceeding anyway...")
+                
+            await asyncio.sleep(2)
             
             # Check if profile exists
             not_found = await page.query_selector('text="Sorry, this page isn\'t available."')
@@ -106,13 +110,17 @@ async def scrape_instagram_posts(username: str, count: int = 10) -> List[Dict[st
         
         try:
             url = f"https://www.instagram.com/{username}/"
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
+            try:
+                await page.goto(url, wait_until="networkidle", timeout=15000)
+            except Exception:
+                print("Network idle timeout, proceeding anyway...")
+                
+            await asyncio.sleep(2)
             
             # Scroll to load more posts
             for _ in range(min(count // 12 + 1, 5)):
                 await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                await asyncio.sleep(1)
+                await asyncio.sleep(1.5)
             
             # Extract post links and thumbnails
             posts = await page.evaluate(f'''() => {{
@@ -232,13 +240,17 @@ async def scrape_instagram_reels(username: str, count: int = 10) -> List[Dict[st
         try:
             # Go directly to user's reels tab
             url = f"https://www.instagram.com/{username}/reels/"
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
+            try:
+                await page.goto(url, wait_until="networkidle", timeout=15000)
+            except Exception:
+                print("Network idle timeout, proceeding anyway...")
+                
+            await asyncio.sleep(2)
             
             # Scroll to load more reels
             for _ in range(min(count // 12 + 1, 5)):
                 await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                await asyncio.sleep(1)
+                await asyncio.sleep(1.5)
             
             # Extract reel shortcodes
             reel_codes = await page.evaluate(f'''() => {{
