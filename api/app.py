@@ -224,27 +224,27 @@ def get_instagram_client() -> InstagramClient:
             
             # Check if this is browser-extracted cookies format
             if 'cookies' in settings and 'sessionid' in settings:
-                # Browser format - need to convert to instagrapi format
-                cookie_dict = settings.get("cookies", {})
-                _instagram_client.set_settings({
-                    "uuids": {},
-                    "mid": cookie_dict.get("mid", ""),
-                    "ig_did": cookie_dict.get("ig_did", ""),
-                    "ig_nrcb": cookie_dict.get("ig_nrcb", ""),
-                    "cookies": cookie_dict,
-                    "last_login": None,
-                    "device_settings": {},
-                    "user_agent": "Instagram 269.0.0.18.75 Android",
-                })
-                if settings.get("sessionid"):
-                    _instagram_client.sessionid = settings["sessionid"]
-                print("Instagram: Restored browser session from INSTAGRAM_SESSION env")
+                # Browser format - use login_by_sessionid
+                sessionid = settings.get("sessionid", "")
+                if sessionid:
+                    try:
+                        _instagram_client.login_by_sessionid(sessionid)
+                        print("Instagram: Logged in via browser sessionid")
+                        return _instagram_client
+                    except Exception as session_err:
+                        print(f"Instagram: sessionid login failed: {session_err}")
+                        # Try setting cookies directly as fallback
+                        cookie_dict = settings.get("cookies", {})
+                        for key, value in cookie_dict.items():
+                            _instagram_client.set_cookie(key, value)
+                        print("Instagram: Set browser cookies as fallback")
+                        return _instagram_client
             else:
-                # Instagrapi format
+                # Instagrapi format - use set_settings
                 _instagram_client.set_settings(settings)
                 print("Instagram: Restored session from INSTAGRAM_SESSION env variable")
-            
-            return _instagram_client
+                return _instagram_client
+                
         except Exception as e:
             print(f"Instagram: Failed to restore from env: {e}")
             _instagram_client = None
